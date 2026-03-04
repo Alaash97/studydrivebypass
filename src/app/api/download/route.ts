@@ -61,32 +61,25 @@ export async function POST(req: Request) {
     logStep("Navigating to login page...");
 
     try {
-      // First wait for the network to be mostly idle so JS can load the React/Vue components
-      await page.goto('https://www.studydrive.net/en/login', { waitUntil: 'networkidle0', timeout: 30000 });
+      // Use domcontentloaded instead of networkidle0 to save huge amounts of time
+      await page.goto('https://www.studydrive.net/en/login', { waitUntil: 'domcontentloaded', timeout: 15000 });
 
       logStep("Waiting for email and password fields...");
 
-      // Wait for email and password fields with a generous timeout
-      await page.waitForSelector('input[type="email"]', { timeout: 20000 });
+      // Wait for email and password fields with a smaller timeout
+      await page.waitForSelector('input[type="email"]', { timeout: 10000 });
 
       // We use page.evaluate to type into it to avoid some complex Puppeteer typing issues on modern frontends
-      await page.evaluate((e: any) => {
+      await page.evaluate((e: any, p: any) => {
         const emailInput = document.querySelector('input[type="email"]') as HTMLInputElement;
         const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
         if (emailInput && passwordInput) {
           emailInput.value = e;
-          // dispatch event so framework knows it changed
           emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      }, email);
-
-      await page.evaluate((p: any) => {
-        const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
-        if (passwordInput) {
           passwordInput.value = p;
           passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
         }
-      }, password);
+      }, email, password);
 
       logStep("Submitting login form...");
 
@@ -100,22 +93,12 @@ export async function POST(req: Request) {
         }
       });
 
-      // Wait for login to complete
-      await page.waitForNavigation({ waitUntil: 'networkidle2' });
+      // Wait for login to complete. domcontentloaded is much faster than networkidle2
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
       logStep("Logged in successfully.");
     } catch (e) {
       console.error("Failed to find login fields or login timed out.");
-      // Take a screenshot and grab HTML to see what's actually on the screen
-      const html = await page.content();
-      const screenshot = await page.screenshot({ encoding: 'base64' });
-
-      console.log("Page HTML snapshot (first 5000 chars):", html.substring(0, 5000));
-
-      // Let's also check for common auth container components that might be lazy loaded
-      const hasShadowRoot = await page.evaluate(() => !!document.querySelector('body > div'));
-      console.log("Has simple div structures:", hasShadowRoot);
-
-      throw new Error("StudyDrive login page did not load as expected. They might have a captcha or changed the login form. Check server console for details.");
+      throw new Error("StudyDrive login timeout or structure change. Check Netlify function logs.");
     }
 
     logStep("Setting up interceptor...");
@@ -145,7 +128,7 @@ export async function POST(req: Request) {
       page.on('response', async (res: any) => {
         const resUrl = res.url();
         if (resUrl.match(URL_REGEX) && res.status() === 200) {
-          logStep(`Intercepted PDF response: ${resUrl}`);
+          logStep(`Intercepted PDF response: ${resUrl.substring(0, 50)}...`);
           try {
             // Get buffer directly from the response
             const buffer = await res.buffer();
@@ -156,12 +139,13 @@ export async function POST(req: Request) {
         }
       });
 
-      // Safety timeout (e.g., 20 seconds)
-      setTimeout(() => reject(new Error('Timeout waiting for file-preview request')), 20000);
+      // Shorter safety timeout
+      setTimeout(() => reject(new Error('Timeout waiting for file-preview request')), 15000);
     });
 
     logStep(`Navigating to target URL: ${url}`);
-    await page.goto(url, { waitUntil: 'networkidle2' });
+    // domcontentloaded is much faster
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
     logStep("Waiting for PDF buffer...");
     const pdfBuffer = await pdfResponsePromise;
