@@ -37,8 +37,8 @@ export async function POST(req: Request) {
       });
     } else {
       // Serverless Chromium setup
-      const packUrl = process.arch === 'arm64' 
-        ? 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.arm64.tar' 
+      const packUrl = process.arch === 'arm64'
+        ? 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.arm64.tar'
         : 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar';
 
       browser = await puppeteer.launch({
@@ -55,13 +55,16 @@ export async function POST(req: Request) {
     // 1. Initial login (Optional optimization: Could save/reuse cookies if we wanted to be faster, 
     // but for simplicity & reliability we login each time for now)
 
-    console.log("Navigating to login page...");
+    const startTime = Date.now();
+    const logStep = (msg: string) => console.log(`[${Date.now() - startTime}ms] ${msg}`);
+
+    logStep("Navigating to login page...");
 
     try {
       // First wait for the network to be mostly idle so JS can load the React/Vue components
       await page.goto('https://www.studydrive.net/en/login', { waitUntil: 'networkidle0', timeout: 30000 });
 
-      console.log("Waiting for email and password fields...");
+      logStep("Waiting for email and password fields...");
 
       // Wait for email and password fields with a generous timeout
       await page.waitForSelector('input[type="email"]', { timeout: 20000 });
@@ -85,7 +88,7 @@ export async function POST(req: Request) {
         }
       }, password);
 
-      console.log("Submitting login form...");
+      logStep("Submitting login form...");
 
       // Try clicking the login button directly instead of pressing Enter
       await page.evaluate(() => {
@@ -99,7 +102,7 @@ export async function POST(req: Request) {
 
       // Wait for login to complete
       await page.waitForNavigation({ waitUntil: 'networkidle2' });
-      console.log("Logged in successfully.");
+      logStep("Logged in successfully.");
     } catch (e) {
       console.error("Failed to find login fields or login timed out.");
       // Take a screenshot and grab HTML to see what's actually on the screen
@@ -115,7 +118,7 @@ export async function POST(req: Request) {
       throw new Error("StudyDrive login page did not load as expected. They might have a captcha or changed the login form. Check server console for details.");
     }
 
-    console.log("Setting up interceptor...");
+    logStep("Setting up interceptor...");
 
     // 2. Inject premium override before navigating to the target document
     await page.evaluateOnNewDocument(() => {
@@ -142,7 +145,7 @@ export async function POST(req: Request) {
       page.on('response', async (res: any) => {
         const resUrl = res.url();
         if (resUrl.match(URL_REGEX) && res.status() === 200) {
-          console.log("Intercepted PDF response:", resUrl);
+          logStep(`Intercepted PDF response: ${resUrl}`);
           try {
             // Get buffer directly from the response
             const buffer = await res.buffer();
@@ -157,13 +160,13 @@ export async function POST(req: Request) {
       setTimeout(() => reject(new Error('Timeout waiting for file-preview request')), 20000);
     });
 
-    console.log("Navigating to target URL:", url);
+    logStep(`Navigating to target URL: ${url}`);
     await page.goto(url, { waitUntil: 'networkidle2' });
 
-    console.log("Waiting for PDF buffer...");
+    logStep("Waiting for PDF buffer...");
     const pdfBuffer = await pdfResponsePromise;
 
-    console.log("PDF buffer extracted. Closing browser...");
+    logStep("PDF buffer extracted. Closing browser...");
     await browser.close();
 
     // Extract original filename if possible from the URL, or default it

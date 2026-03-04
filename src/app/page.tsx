@@ -27,8 +27,20 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to unlock document.');
+        let errorMsg = 'Failed to unlock document.';
+        try {
+          const contentType = res.headers.get('content-type');
+          if (contentType && contentType.includes('application/json')) {
+            const errorData = await res.json();
+            errorMsg = errorData.error || errorMsg;
+          } else {
+            const textData = await res.text();
+            errorMsg = `Server Error (${res.status}): ${textData.substring(0, 100)}`;
+          }
+        } catch (e) {
+          errorMsg = `Server Error (${res.status}): Failed to parse response.`;
+        }
+        throw new Error(errorMsg);
       }
 
       const blob = await res.blob();

@@ -1,0 +1,8 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[functions]
+  node_bundler = "esbuild"
+  # Set timeout to 60 seconds. This might require a Pro plan, but free plan sometimes allows up to 26s if configured.
+  timeout = 60
