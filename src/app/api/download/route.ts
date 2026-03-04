@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server';
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
+
+// Determine if we are running in an AWS/Netlify/Vercel serverless environment
+const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_REGION;
+
+// Increase max duration for serverless functions (Netlify/Vercel) since Puppeteer takes time
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
@@ -19,11 +26,25 @@ export async function POST(req: Request) {
       );
     }
 
-    // Launch a headless browser
-    const browser = await puppeteer.launch({
-      headless: true, // Use headless boolean (headless: 'new' is deprecated in newer versions, falling back to true)
-      args: ['--no-sandbox', '--disable-setuid-sandbox'] // Important for serverless environments
-    });
+    let browser;
+
+    if (isLocal) {
+      // Fallback to local full puppeteer installation (requires `puppeteer` package)
+      const localPuppeteer = require('puppeteer');
+      browser = await localPuppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      });
+    } else {
+      // Serverless Chromium setup
+      browser = await puppeteer.launch({
+        args: [...chromium.args, '--hide-scrollbars', '--disable-web-security'],
+        defaultViewport: (chromium as any).defaultViewport,
+        executablePath: await chromium.executablePath(),
+        headless: (chromium as any).headless,
+        ignoreHTTPSErrors: true,
+      } as any);
+    }
 
     const page = await browser.newPage();
 
@@ -42,7 +63,7 @@ export async function POST(req: Request) {
       await page.waitForSelector('input[type="email"]', { timeout: 20000 });
 
       // We use page.evaluate to type into it to avoid some complex Puppeteer typing issues on modern frontends
-      await page.evaluate((e) => {
+      await page.evaluate((e: any) => {
         const emailInput = document.querySelector('input[type="email"]') as HTMLInputElement;
         const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
         if (emailInput && passwordInput) {
@@ -52,7 +73,7 @@ export async function POST(req: Request) {
         }
       }, email);
 
-      await page.evaluate((p) => {
+      await page.evaluate((p: any) => {
         const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
         if (passwordInput) {
           passwordInput.value = p;
@@ -114,7 +135,7 @@ export async function POST(req: Request) {
 
     // Promise to wait for the specific PDF response
     const pdfResponsePromise = new Promise<Buffer>((resolve, reject) => {
-      page.on('response', async (res) => {
+      page.on('response', async (res: any) => {
         const resUrl = res.url();
         if (resUrl.match(URL_REGEX) && res.status() === 200) {
           console.log("Intercepted PDF response:", resUrl);
