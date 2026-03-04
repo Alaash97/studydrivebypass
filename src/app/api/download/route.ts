@@ -37,10 +37,14 @@ export async function POST(req: Request) {
       });
     } else {
       // Serverless Chromium setup
+      const packUrl = process.arch === 'arm64' 
+        ? 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.arm64.tar' 
+        : 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar';
+
       browser = await puppeteer.launch({
         args: [...chromium.args, '--hide-scrollbars', '--disable-web-security'],
         defaultViewport: (chromium as any).defaultViewport,
-        executablePath: await chromium.executablePath(),
+        executablePath: await chromium.executablePath(packUrl),
         headless: (chromium as any).headless,
         ignoreHTTPSErrors: true,
       } as any);
