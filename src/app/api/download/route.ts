@@ -61,13 +61,14 @@ export async function POST(req: Request) {
     logStep("Navigating to login page...");
 
     try {
-      // Use domcontentloaded instead of networkidle0 to save huge amounts of time
-      await page.goto('https://www.studydrive.net/en/login', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      // Use waituntil: 'commit' or just don't wait for domcontentloaded, wait for the selector directly instead
+      await page.goto('https://www.studydrive.net/en/login', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch((e: any) => logStep(`Goto soft timeout: ${e.message}`));
 
       logStep("Waiting for email and password fields...");
 
-      // Wait for email and password fields with a smaller timeout
-      await page.waitForSelector('input[type="email"]', { timeout: 10000 });
+      // Wait for email and password fields
+      await page.waitForSelector('input[type="email"]', { timeout: 15000 });
+      await page.waitForSelector('input[type="password"]', { timeout: 5000 });
 
       // We use page.evaluate to type into it to avoid some complex Puppeteer typing issues on modern frontends
       await page.evaluate((e: any, p: any) => {
@@ -83,22 +84,23 @@ export async function POST(req: Request) {
 
       logStep("Submitting login form...");
 
-      // Try clicking the login button directly instead of pressing Enter
+      // Try clicking the login button
       await page.evaluate(() => {
         const buttons = Array.from(document.querySelectorAll('button'));
-        // Find the button that looks like the login submission
         const loginBtn = buttons.find(b => b.textContent?.toLowerCase().includes('log') || b.textContent?.toLowerCase().includes('sign'));
         if (loginBtn) {
           loginBtn.click();
         }
       });
 
-      // Wait for login to complete. domcontentloaded is much faster than networkidle2
-      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
-      logStep("Logged in successfully.");
-    } catch (e) {
-      console.error("Failed to find login fields or login timed out.");
-      throw new Error("StudyDrive login timeout or structure change. Check Netlify function logs.");
+      // Instead of relying on waitForNavigation (which is flaky in React SPAs), we wait for the URL to change 
+      // or a specific element on the dashboard to appear
+      await page.waitForFunction(() => window.location.href !== 'https://www.studydrive.net/en/login', { timeout: 15000 }).catch((e: any) => logStep(`Navigation wait soft timeout: ${e.message}`));
+
+      logStep("Logged in successfully (or navigation assumed).");
+    } catch (e: any) {
+      console.error("Failed to find login fields or login timed out.", e);
+      throw new Error(`Login Step Failed: ${e?.message || 'Unknown Timeout'}`);
     }
 
     logStep("Setting up interceptor...");
@@ -139,13 +141,15 @@ export async function POST(req: Request) {
         }
       });
 
-      // Shorter safety timeout
-      setTimeout(() => reject(new Error('Timeout waiting for file-preview request')), 15000);
+      // Increased safety timeout because the PDF fetch might take a while to start
+      setTimeout(() => reject(new Error('Timeout waiting for file-preview request')), 30000);
     });
 
     logStep(`Navigating to target URL: ${url}`);
-    // domcontentloaded is much faster
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+    // domcontentloaded is too fast here, the React app hasn't mounted to trigger the PDF fetch.
+    // We need to wait for the network to settle or at least have a longer timeout.
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 }).catch((e: any) => logStep(`Target URL Goto timeout: ${e.message}`));
 
     logStep("Waiting for PDF buffer...");
     const pdfBuffer = await pdfResponsePromise;
