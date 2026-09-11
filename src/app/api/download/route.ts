@@ -52,6 +52,7 @@ const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_
 
 // Increase max duration for serverless functions (Netlify/Vercel) since Puppeteer takes time
 export const maxDuration = 60;
+export const preferredRegion = 'fra1';
 
 const PDF_PREFIX = new TextEncoder().encode('%PDF-');
 
@@ -141,41 +142,30 @@ async function streamDocument(
 
     logStep("Setting up interceptor...");
 
-    // 2. Inject premium override before navigating to the target document
-    await page.evaluateOnNewDocument(() => {
-      const studyDriveWindow = window as unknown as Window & { sdWindow: object };
-      studyDriveWindow.sdWindow = new Proxy({}, {
-        set(target, prop, value, receiver) {
-          if (prop === "user") {
-            if (value && typeof value === "object") {
-              Object.defineProperty(value, "is_premium", {
-                value: true,
-                configurable: false,
-                writable: false,
-              });
-            }
-          }
-          return Reflect.set(target, prop, value, receiver);
-        }
-      });
-    });
-
     const URL_REGEX = /studydrive\.net\/file-preview/;
 
     // Capture and abort the authenticated browser request before StudyDrive
     // consumes its signed URL. The server then opens that URL as a stream.
     await page.setRequestInterception(true);
+    let previewCaptured = false;
+    const relevantRequests: string[] = [];
     const previewRequestPromise = new Promise<PreviewRequest>((resolve, reject) => {
       const timeout = setTimeout(
-        () => reject(new Error('Timeout waiting for file-preview request')),
+        () => reject(new Error(
+          `Timeout waiting for file-preview request. Relevant requests: ${relevantRequests.slice(-12).join(', ') || '(none)'}`,
+        )),
         30_000,
       );
-      let captured = false;
 
       const handleRequest = (request: HTTPRequest) => {
         const requestUrl = request.url();
-        if (!captured && URL_REGEX.test(requestUrl)) {
-          captured = true;
+        if (/document|preview|pdf/i.test(requestUrl)) {
+          const requestPath = new URL(requestUrl).pathname;
+          if (!relevantRequests.includes(requestPath)) relevantRequests.push(requestPath);
+        }
+
+        if (!previewCaptured && URL_REGEX.test(requestUrl)) {
+          previewCaptured = true;
           logStep(`Intercepted PDF request: ${requestUrl.substring(0, 50)}...`);
           clearTimeout(timeout);
           resolve({
@@ -202,6 +192,21 @@ async function streamDocument(
       const message = error instanceof Error ? error.message : 'Unknown timeout';
       logStep(`Target URL Goto timeout: ${message}`);
     });
+
+    const previewStarted = await Promise.race([
+      previewRequestPromise.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 2_000)),
+    ]);
+
+    if (!previewStarted && !previewCaptured) {
+      const clickedDownload = await page.evaluate(() => {
+        const controls = Array.from(document.querySelectorAll<HTMLElement>('button, a'));
+        const download = controls.find((element) => /^download(?:\s|$)/i.test(element.innerText.trim()));
+        download?.click();
+        return Boolean(download);
+      });
+      logStep(clickedDownload ? "Clicked the document Download control." : "No Download control was found.");
+    }
 
     logStep("Waiting for PDF request...");
     const previewRequest = await previewRequestPromise;
