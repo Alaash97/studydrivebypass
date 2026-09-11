@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import puppeteer, { type Browser, type HTTPRequest } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
+import { request as httpsRequest } from 'node:https';
+import { Readable } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import {
   createStudyDriveSession,
   STUDYDRIVE_NETWORK_ARGS,
@@ -13,6 +16,36 @@ type PreviewRequest = {
   headers: Record<string, string>;
   postData?: string;
 };
+
+function openHttpsStream(
+  requestData: PreviewRequest,
+  headers: Record<string, string>,
+): Promise<IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest(requestData.url, {
+      method: requestData.method,
+      headers,
+      family: 4,
+    }, (response) => {
+      const status = response.statusCode ?? 0;
+      if (status < 200 || status >= 300) {
+        response.resume();
+        reject(new Error(`StudyDrive file-preview returned HTTP ${status}.`));
+        return;
+      }
+      resolve(response);
+    });
+
+    request.setTimeout(30_000, () => {
+      request.destroy(new Error('StudyDrive PDF request timed out.'));
+    });
+    request.on('error', reject);
+    if (requestData.postData && !['GET', 'HEAD'].includes(requestData.method)) {
+      request.write(requestData.postData);
+    }
+    request.end();
+  });
+}
 
 // Determine if we are running in an AWS/Netlify/Vercel serverless environment
 const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_REGION;
@@ -185,24 +218,17 @@ async function streamDocument(
     }
 
     logStep("Opening direct PDF stream...");
-    const canHaveBody = !['GET', 'HEAD'].includes(previewRequest.method);
-    const pdfResponse = await fetch(previewRequest.url, {
-      method: previewRequest.method,
-      headers: forwardedHeaders,
-      body: canHaveBody ? previewRequest.postData : undefined,
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30_000),
-    });
-
-    if (!pdfResponse.ok || !pdfResponse.body) {
-      throw new Error(`StudyDrive file-preview returned HTTP ${pdfResponse.status}.`);
-    }
+    const pdfResponse = await openHttpsStream(
+      previewRequest,
+      Object.fromEntries(forwardedHeaders.entries()),
+    );
 
     logStep("PDF stream opened. Closing browser...");
     await browser.close();
     browser = undefined;
 
-    await pipePdfBody(pdfResponse.body, controller);
+    const pdfBody = Readable.toWeb(pdfResponse) as ReadableStream<Uint8Array>;
+    await pipePdfBody(pdfBody, controller);
     controller.close();
   } catch (error: unknown) {
     console.error("Error generating PDF:", error);

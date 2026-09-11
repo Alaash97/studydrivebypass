@@ -1,4 +1,6 @@
 import type { CookieData, Page } from 'puppeteer-core';
+import { request as httpsRequest, type RequestOptions } from 'node:https';
+import type { IncomingHttpHeaders } from 'node:http';
 
 export const STUDYDRIVE_LOGIN_URL = 'https://www.studydrive.net/en/login';
 export const STUDYDRIVE_USER_AGENT =
@@ -40,6 +42,47 @@ function getSetCookieHeaders(headers: Headers): string[] {
   return cookieHeaders.getSetCookie?.() ?? (headers.get('set-cookie') ? [headers.get('set-cookie')!] : []);
 }
 
+type HttpResult = {
+  status: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+};
+
+function requestHttps(
+  url: string,
+  options: RequestOptions,
+  body?: string,
+): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest(url, { ...options, family: 4 }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      response.on('end', () => resolve({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      }));
+      response.on('error', reject);
+    });
+
+    request.setTimeout(10_000, () => request.destroy(new Error('StudyDrive HTTPS request timed out.')));
+    request.on('error', reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
+function mergeNodeCookies(cookieJar: Map<string, string>, headers: IncomingHttpHeaders): void {
+  for (const setCookie of headers['set-cookie'] ?? []) {
+    const pair = setCookie.split(';', 1)[0];
+    const separator = pair.indexOf('=');
+    if (separator <= 0) continue;
+    cookieJar.set(pair.slice(0, separator), pair.slice(separator + 1));
+  }
+}
+
 export function mergeSetCookies(cookieJar: Map<string, string>, headers: Headers): void {
   for (const setCookie of getSetCookieHeaders(headers)) {
     const pair = setCookie.split(';', 1)[0];
@@ -72,18 +115,12 @@ export async function createStudyDriveSession(
   };
 
   const bootstrapStarted = Date.now();
-  const initialResponse = await fetch('https://www.studydrive.net/login', {
+  const initialResponse = await requestHttps('https://www.studydrive.net/login', {
     method: 'POST',
-    headers: {
-      ...requestHeaders,
-    },
-    body: '{}',
-    redirect: 'manual',
-    signal: AbortSignal.timeout(10_000),
-  });
+    headers: requestHeaders,
+  }, '{}');
 
-  mergeSetCookies(cookieJar, initialResponse.headers);
-  await initialResponse.body?.cancel();
+  mergeNodeCookies(cookieJar, initialResponse.headers);
   console.log(
     `[StudyDrive HTTP login] Bootstrap HTTP ${initialResponse.status} after ${Date.now() - bootstrapStarted}ms`,
   );
@@ -92,23 +129,25 @@ export async function createStudyDriveSession(
   }
 
   const loginStarted = Date.now();
-  const loginResponse = await fetch('https://www.studydrive.net/login', {
+  const loginResponse = await requestHttps('https://www.studydrive.net/login', {
     method: 'POST',
     headers: {
       ...requestHeaders,
       cookie: Array.from(cookieJar, ([name, value]) => `${name}=${value}`).join('; '),
     },
-    body: JSON.stringify({ email, password, remember: true }),
-    redirect: 'manual',
-    signal: AbortSignal.timeout(10_000),
-  });
+  }, JSON.stringify({ email, password, remember: true }));
 
-  mergeSetCookies(cookieJar, loginResponse.headers);
-  const result = await loginResponse.json().catch(() => null) as { success?: boolean } | null;
+  mergeNodeCookies(cookieJar, loginResponse.headers);
+  let result: { success?: boolean } | null = null;
+  try {
+    result = JSON.parse(loginResponse.body.toString('utf8')) as { success?: boolean };
+  } catch {
+    // The status check below provides a safe error without exposing response data.
+  }
   console.log(
     `[StudyDrive HTTP login] Credentials HTTP ${loginResponse.status} after ${Date.now() - loginStarted}ms`,
   );
-  if (!loginResponse.ok || !result?.success) {
+  if (loginResponse.status < 200 || loginResponse.status >= 300 || !result?.success) {
     throw new Error(`StudyDrive login request returned HTTP ${loginResponse.status}.`);
   }
 
