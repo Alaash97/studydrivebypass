@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import puppeteer, { type Browser, type HTTPResponse } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 import { loginToStudyDrive, STUDYDRIVE_NETWORK_ARGS } from '@/lib/studydrive-login';
+import { bufferToStream } from '@/lib/buffer-stream';
 
 // Determine if we are running in an AWS/Netlify/Vercel serverless environment
 const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_REGION;
@@ -38,9 +39,7 @@ export async function POST(req: Request) {
       });
     } else {
       // Serverless Chromium setup
-      const packUrl = process.arch === 'arm64'
-        ? 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.arm64.tar'
-        : 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar';
+      chromium.setGraphicsMode = false;
 
       browser = await puppeteer.launch({
         args: [
@@ -49,7 +48,9 @@ export async function POST(req: Request) {
           '--disable-web-security',
           ...STUDYDRIVE_NETWORK_ARGS,
         ],
-        executablePath: await chromium.executablePath(packUrl),
+        // The package already contains the Brotli assets. Avoid downloading a
+        // large archive from GitHub during every serverless cold start.
+        executablePath: await chromium.executablePath(),
         headless: true,
         acceptInsecureCerts: true,
       });
@@ -139,11 +140,11 @@ export async function POST(req: Request) {
     const filename = match?.[1] ? `${match[1]}.pdf` : "StudyDrive-Document.pdf";
 
     // 3. Return the PDF
-    return new NextResponse(pdfBuffer as unknown as BodyInit, {
+    return new NextResponse(bufferToStream(new Uint8Array(pdfBuffer)), {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${filename}"`
+        'Content-Disposition': `attachment; filename="${filename}"`,
       }
     });
 

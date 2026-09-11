@@ -21,7 +21,8 @@ export const LOGIN_SELECTORS = {
   submit: 'button[type="submit"], input[type="submit"]',
 };
 
-const LOGIN_TIMEOUT_MS = 45_000;
+// Keep failed attempts comfortably inside Netlify's 60-second hard limit.
+const LOGIN_TIMEOUT_MS = 15_000;
 
 export function isLoginUrl(url: string): boolean {
   try {
@@ -45,15 +46,16 @@ async function openLoginForm(page: Page): Promise<void> {
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      await page.goto(STUDYDRIVE_LOGIN_URL, {
-        waitUntil: 'domcontentloaded',
-        timeout: LOGIN_TIMEOUT_MS,
-      });
-
-      await page.waitForSelector(LOGIN_SELECTORS.email, {
-        visible: true,
-        timeout: LOGIN_TIMEOUT_MS,
-      });
+      await Promise.all([
+        page.goto(STUDYDRIVE_LOGIN_URL, {
+          waitUntil: 'domcontentloaded',
+          timeout: LOGIN_TIMEOUT_MS,
+        }),
+        page.waitForSelector(LOGIN_SELECTORS.email, {
+          visible: true,
+          timeout: LOGIN_TIMEOUT_MS,
+        }),
+      ]);
       return;
     } catch (error) {
       lastError = error;
