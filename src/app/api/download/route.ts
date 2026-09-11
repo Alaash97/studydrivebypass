@@ -230,12 +230,17 @@ export async function POST(req: Request) {
 
     const match = url.match(/doc\/([^/]+)/);
     const filename = match?.[1] ? `${match[1]}.pdf` : 'StudyDrive-Document.pdf';
+    let streamStarted = false;
     const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
+      pull(controller) {
+        if (streamStarted) return;
+        streamStarted = true;
+
         // Flush valid PDF bytes immediately so Netlify does not terminate a
-        // cold Chromium start as an inactive upstream connection.
+        // cold Chromium start as an inactive upstream connection. Returning
+        // the producer promise keeps serverless runtimes from freezing it.
         controller.enqueue(PDF_PREFIX);
-        void streamDocument(url, email, password, controller);
+        return streamDocument(url, email, password, controller);
       },
     });
 
