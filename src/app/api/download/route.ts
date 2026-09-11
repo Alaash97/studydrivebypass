@@ -1,8 +1,14 @@
 import { NextResponse } from 'next/server';
-import puppeteer, { type Browser, type HTTPResponse } from 'puppeteer-core';
+import puppeteer, { type Browser, type HTTPRequest } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 import { loginToStudyDrive, STUDYDRIVE_NETWORK_ARGS } from '@/lib/studydrive-login';
-import { bufferToStream } from '@/lib/buffer-stream';
+
+type PreviewRequest = {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  postData?: string;
+};
 
 // Determine if we are running in an AWS/Netlify/Vercel serverless environment
 const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_REGION;
@@ -97,26 +103,38 @@ export async function POST(req: Request) {
       });
     });
 
-    const URL_REGEX = /.*studydrive\.net\/file-preview/g;
+    const URL_REGEX = /studydrive\.net\/file-preview/;
 
-    // Promise to wait for the specific PDF response
-    const pdfResponsePromise = new Promise<Buffer>((resolve, reject) => {
-      page.on('response', async (res: HTTPResponse) => {
-        const resUrl = res.url();
-        if (resUrl.match(URL_REGEX) && res.status() === 200) {
-          logStep(`Intercepted PDF response: ${resUrl.substring(0, 50)}...`);
-          try {
-            // Get buffer directly from the response
-            const buffer = await res.buffer();
-            resolve(buffer);
-          } catch (err) {
-            reject(err);
-          }
+    // Capture and abort the authenticated browser request before StudyDrive
+    // consumes its signed URL. The server then opens that URL as a stream.
+    await page.setRequestInterception(true);
+    const previewRequestPromise = new Promise<PreviewRequest>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Timeout waiting for file-preview request')),
+        30_000,
+      );
+      let captured = false;
+
+      const handleRequest = (request: HTTPRequest) => {
+        const requestUrl = request.url();
+        if (!captured && URL_REGEX.test(requestUrl)) {
+          captured = true;
+          logStep(`Intercepted PDF request: ${requestUrl.substring(0, 50)}...`);
+          clearTimeout(timeout);
+          resolve({
+            url: requestUrl,
+            method: request.method(),
+            headers: request.headers(),
+            postData: request.postData(),
+          });
+          void request.abort('blockedbyclient');
+          return;
         }
-      });
 
-      // Increased safety timeout because the PDF fetch might take a while to start
-      setTimeout(() => reject(new Error('Timeout waiting for file-preview request')), 30000);
+        void request.continue();
+      };
+
+      page.on('request', handleRequest);
     });
 
     logStep(`Navigating to target URL: ${url}`);
@@ -128,10 +146,35 @@ export async function POST(req: Request) {
       logStep(`Target URL Goto timeout: ${message}`);
     });
 
-    logStep("Waiting for PDF buffer...");
-    const pdfBuffer = await pdfResponsePromise;
+    logStep("Waiting for PDF request...");
+    const previewRequest = await previewRequestPromise;
 
-    logStep("PDF buffer extracted. Closing browser...");
+    const forwardedHeaders = new Headers();
+    for (const name of ['accept', 'accept-language', 'authorization', 'content-type', 'origin', 'referer', 'user-agent']) {
+      const value = previewRequest.headers[name];
+      if (value) forwardedHeaders.set(name, value);
+    }
+
+    const cookies = await page.cookies(previewRequest.url);
+    if (cookies.length > 0) {
+      forwardedHeaders.set('cookie', cookies.map(({ name, value }) => `${name}=${value}`).join('; '));
+    }
+
+    logStep("Opening direct PDF stream...");
+    const canHaveBody = !['GET', 'HEAD'].includes(previewRequest.method);
+    const pdfResponse = await fetch(previewRequest.url, {
+      method: previewRequest.method,
+      headers: forwardedHeaders,
+      body: canHaveBody ? previewRequest.postData : undefined,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!pdfResponse.ok || !pdfResponse.body) {
+      throw new Error(`StudyDrive file-preview returned HTTP ${pdfResponse.status}.`);
+    }
+
+    logStep("PDF stream opened. Closing browser...");
     await browser.close();
     browser = undefined;
 
@@ -140,7 +183,7 @@ export async function POST(req: Request) {
     const filename = match?.[1] ? `${match[1]}.pdf` : "StudyDrive-Document.pdf";
 
     // 3. Return the PDF
-    return new NextResponse(bufferToStream(new Uint8Array(pdfBuffer)), {
+    return new NextResponse(pdfResponse.body, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
