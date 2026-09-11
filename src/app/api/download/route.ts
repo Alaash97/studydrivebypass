@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import puppeteer, { type Browser, type HTTPRequest } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 import {
-  loginToStudyDriveViaHttp,
+  createStudyDriveSession,
   STUDYDRIVE_NETWORK_ARGS,
   STUDYDRIVE_USER_AGENT,
 } from '@/lib/studydrive-login';
@@ -60,8 +60,14 @@ async function streamDocument(
   controller: ReadableStreamDefaultController<Uint8Array>,
 ): Promise<void> {
   let browser: Browser | undefined;
+  const startTime = Date.now();
+  const logStep = (msg: string) => console.log(`[${Date.now() - startTime}ms] ${msg}`);
 
   try {
+    logStep("Creating authenticated StudyDrive session...");
+    const authCookies = await createStudyDriveSession(email, password);
+    logStep("Authenticated session ready. Launching browser...");
+
     if (isLocal) {
       // Fallback to local full puppeteer installation (requires `puppeteer` package)
       const localPuppeteer = await import('puppeteer');
@@ -95,22 +101,10 @@ async function streamDocument(
     const page = await browser.newPage();
     await page.setUserAgent(STUDYDRIVE_USER_AGENT);
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.setCookie(...authCookies);
 
     // 1. Initial login (Optional optimization: Could save/reuse cookies if we wanted to be faster, 
     // but for simplicity & reliability we login each time for now)
-
-    const startTime = Date.now();
-    const logStep = (msg: string) => console.log(`[${Date.now() - startTime}ms] ${msg}`);
-
-    try {
-      logStep("Creating authenticated StudyDrive session...");
-      await loginToStudyDriveViaHttp(page, email, password);
-      logStep("Authenticated session ready.");
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown timeout';
-      console.error("Failed to find login fields or login timed out.", error);
-      throw new Error(`Login Step Failed: ${message}`);
-    }
 
     logStep("Setting up interceptor...");
 
