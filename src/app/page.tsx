@@ -37,7 +37,7 @@ export default function Home() {
             const textData = await res.text();
             errorMsg = `Server Error (${res.status}): ${textData.substring(0, 100)}`;
           }
-        } catch (e) {
+        } catch {
           errorMsg = `Server Error (${res.status}): Failed to parse response.`;
         }
         throw new Error(errorMsg);
@@ -65,8 +65,8 @@ export default function Home() {
       setSuccess(true);
       setUrl('');
 
-    } catch (err: any) {
-      setError(err.message || 'An unexpected server error occurred.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An unexpected server error occurred.');
     } finally {
       setLoading(false);
     }

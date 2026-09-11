@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import puppeteer from 'puppeteer-core';
+import puppeteer, { type Browser, type HTTPResponse } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
+import { loginToStudyDrive } from '@/lib/studydrive-login';
 
 // Determine if we are running in an AWS/Netlify/Vercel serverless environment
 const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_REGION;
@@ -9,10 +10,12 @@ const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
-  try {
-    const { url } = await req.json();
+  let browser: Browser | undefined;
 
-    if (!url || !url.includes('studydrive.net')) {
+  try {
+    const { url } = (await req.json()) as { url?: unknown };
+
+    if (typeof url !== 'string' || !url.includes('studydrive.net')) {
       return NextResponse.json({ error: 'Valid StudyDrive URL is required.' }, { status: 400 });
     }
 
@@ -26,11 +29,9 @@ export async function POST(req: Request) {
       );
     }
 
-    let browser;
-
     if (isLocal) {
       // Fallback to local full puppeteer installation (requires `puppeteer` package)
-      const localPuppeteer = require('puppeteer');
+      const localPuppeteer = await import('puppeteer');
       browser = await localPuppeteer.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -43,11 +44,10 @@ export async function POST(req: Request) {
 
       browser = await puppeteer.launch({
         args: [...chromium.args, '--hide-scrollbars', '--disable-web-security'],
-        defaultViewport: (chromium as any).defaultViewport,
         executablePath: await chromium.executablePath(packUrl),
-        headless: (chromium as any).headless,
-        ignoreHTTPSErrors: true,
-      } as any);
+        headless: true,
+        acceptInsecureCerts: true,
+      });
     }
 
     const page = await browser.newPage();
@@ -61,53 +61,21 @@ export async function POST(req: Request) {
     logStep("Navigating to login page...");
 
     try {
-      // Use waituntil: 'commit' or just don't wait for domcontentloaded, wait for the selector directly instead
-      await page.goto('https://www.studydrive.net/en/login', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch((e: any) => logStep(`Goto soft timeout: ${e.message}`));
-
-      logStep("Waiting for email and password fields...");
-
-      // Wait for email and password fields
-      await page.waitForSelector('input[type="email"]', { timeout: 15000 });
-      await page.waitForSelector('input[type="password"]', { timeout: 5000 });
-
-      // We use page.evaluate to type into it to avoid some complex Puppeteer typing issues on modern frontends
-      await page.evaluate((e: any, p: any) => {
-        const emailInput = document.querySelector('input[type="email"]') as HTMLInputElement;
-        const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
-        if (emailInput && passwordInput) {
-          emailInput.value = e;
-          emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-          passwordInput.value = p;
-          passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-      }, email, password);
-
-      logStep("Submitting login form...");
-
-      // Try clicking the login button
-      await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button'));
-        const loginBtn = buttons.find(b => b.textContent?.toLowerCase().includes('log') || b.textContent?.toLowerCase().includes('sign'));
-        if (loginBtn) {
-          loginBtn.click();
-        }
-      });
-
-      // Instead of relying on waitForNavigation (which is flaky in React SPAs), we wait for the URL to change 
-      // or a specific element on the dashboard to appear
-      await page.waitForFunction(() => window.location.href !== 'https://www.studydrive.net/en/login', { timeout: 15000 }).catch((e: any) => logStep(`Navigation wait soft timeout: ${e.message}`));
-
-      logStep("Logged in successfully (or navigation assumed).");
-    } catch (e: any) {
-      console.error("Failed to find login fields or login timed out.", e);
-      throw new Error(`Login Step Failed: ${e?.message || 'Unknown Timeout'}`);
+      logStep("Waiting for and submitting the login form...");
+      await loginToStudyDrive(page, email, password);
+      logStep("Logged in successfully.");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown timeout';
+      console.error("Failed to find login fields or login timed out.", error);
+      throw new Error(`Login Step Failed: ${message}`);
     }
 
     logStep("Setting up interceptor...");
 
     // 2. Inject premium override before navigating to the target document
     await page.evaluateOnNewDocument(() => {
-      (window as any).sdWindow = new Proxy({}, {
+      const studyDriveWindow = window as unknown as Window & { sdWindow: object };
+      studyDriveWindow.sdWindow = new Proxy({}, {
         set(target, prop, value, receiver) {
           if (prop === "user") {
             if (value && typeof value === "object") {
@@ -127,7 +95,7 @@ export async function POST(req: Request) {
 
     // Promise to wait for the specific PDF response
     const pdfResponsePromise = new Promise<Buffer>((resolve, reject) => {
-      page.on('response', async (res: any) => {
+      page.on('response', async (res: HTTPResponse) => {
         const resUrl = res.url();
         if (resUrl.match(URL_REGEX) && res.status() === 200) {
           logStep(`Intercepted PDF response: ${resUrl.substring(0, 50)}...`);
@@ -149,16 +117,20 @@ export async function POST(req: Request) {
 
     // domcontentloaded is too fast here, the React app hasn't mounted to trigger the PDF fetch.
     // We need to wait for the network to settle or at least have a longer timeout.
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 }).catch((e: any) => logStep(`Target URL Goto timeout: ${e.message}`));
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Unknown timeout';
+      logStep(`Target URL Goto timeout: ${message}`);
+    });
 
     logStep("Waiting for PDF buffer...");
     const pdfBuffer = await pdfResponsePromise;
 
     logStep("PDF buffer extracted. Closing browser...");
     await browser.close();
+    browser = undefined;
 
     // Extract original filename if possible from the URL, or default it
-    const match = url.match(/doc\/([^\/]+)/);
+    const match = url.match(/doc\/([^/]+)/);
     const filename = match?.[1] ? `${match[1]}.pdf` : "StudyDrive-Document.pdf";
 
     // 3. Return the PDF
@@ -170,11 +142,14 @@ export async function POST(req: Request) {
       }
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Failed to download document.';
     console.error("Error generating PDF:", error);
     return NextResponse.json(
-      { error: error?.message || 'Failed to download document.' },
+      { error: message },
       { status: 500 }
     );
+  } finally {
+    await browser?.close().catch(() => undefined);
   }
 }
