@@ -45,6 +45,8 @@ async function openLoginForm(page: Page): Promise<void> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const attemptStarted = Date.now();
+    console.log(`[StudyDrive login] Opening form (attempt ${attempt}/2)`);
     try {
       await Promise.all([
         page.goto(STUDYDRIVE_LOGIN_URL, {
@@ -56,9 +58,15 @@ async function openLoginForm(page: Page): Promise<void> {
           timeout: LOGIN_TIMEOUT_MS,
         }),
       ]);
+      console.log(`[StudyDrive login] Form ready after ${Date.now() - attemptStarted}ms`);
       return;
     } catch (error) {
       lastError = error;
+      const summary = await getPageSummary(page).catch(() => `URL: ${page.url()}`);
+      const reason = error instanceof Error ? error.message : 'Unknown navigation error';
+      console.warn(
+        `[StudyDrive login] Attempt ${attempt}/2 failed after ${Date.now() - attemptStarted}ms: ${reason}. ${summary}`,
+      );
     }
   }
 

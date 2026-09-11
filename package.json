@@ -11,10 +11,10 @@
     "test:login": "cross-env RUN_STUDYDRIVE_INTEGRATION=1 vitest run src/lib/studydrive-login.integration.test.ts"
   },
   "dependencies": {
-    "@sparticuz/chromium": "^143.0.4",
+    "@sparticuz/chromium": "143.0.4",
     "next": "16.1.6",
-    "puppeteer": "^24.38.0",
-    "puppeteer-core": "^24.38.0",
+    "puppeteer": "24.34.0",
+    "puppeteer-core": "24.34.0",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

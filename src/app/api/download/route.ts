@@ -68,23 +68,32 @@ async function streamDocument(
     } else {
       // Serverless Chromium setup
       chromium.setGraphicsMode = false;
-
-      browser = await puppeteer.launch({
+      const serverlessArgs = puppeteer.defaultArgs({
         args: [
           ...chromium.args,
           '--hide-scrollbars',
           '--disable-web-security',
           ...STUDYDRIVE_NETWORK_ARGS,
         ],
+        headless: 'shell',
+      });
+
+      browser = await puppeteer.launch({
+        args: serverlessArgs,
         // The package already contains the Brotli assets. Avoid downloading a
         // large archive from GitHub during every serverless cold start.
         executablePath: await chromium.executablePath(),
-        headless: true,
+        headless: 'shell',
         acceptInsecureCerts: true,
       });
     }
 
     const page = await browser.newPage();
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+    );
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
     // 1. Initial login (Optional optimization: Could save/reuse cookies if we wanted to be faster, 
     // but for simplicity & reliability we login each time for now)
@@ -149,11 +158,11 @@ async function streamDocument(
             headers: request.headers(),
             postData: request.postData(),
           });
-          void request.abort('blockedbyclient');
+          void request.abort('blockedbyclient').catch(() => undefined);
           return;
         }
 
-        void request.continue();
+        void request.continue().catch(() => undefined);
       };
 
       page.on('request', handleRequest);
