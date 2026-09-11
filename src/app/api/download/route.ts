@@ -16,26 +16,48 @@ const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_
 // Increase max duration for serverless functions (Netlify/Vercel) since Puppeteer takes time
 export const maxDuration = 60;
 
-export async function POST(req: Request) {
+const PDF_PREFIX = new TextEncoder().encode('%PDF-');
+
+async function pipePdfBody(
+  body: ReadableStream<Uint8Array>,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+): Promise<void> {
+  const reader = body.getReader();
+  let prefixOffset = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    let chunk = value;
+    if (prefixOffset < PDF_PREFIX.length) {
+      const bytesToCheck = Math.min(PDF_PREFIX.length - prefixOffset, chunk.length);
+      for (let index = 0; index < bytesToCheck; index += 1) {
+        if (chunk[index] !== PDF_PREFIX[prefixOffset + index]) {
+          throw new Error('StudyDrive returned data that is not a PDF.');
+        }
+      }
+      prefixOffset += bytesToCheck;
+      chunk = chunk.subarray(bytesToCheck);
+    }
+
+    if (chunk.length > 0) controller.enqueue(chunk);
+  }
+
+  if (prefixOffset !== PDF_PREFIX.length) {
+    throw new Error('StudyDrive returned an incomplete PDF.');
+  }
+}
+
+async function streamDocument(
+  url: string,
+  email: string,
+  password: string,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+): Promise<void> {
   let browser: Browser | undefined;
 
   try {
-    const { url } = (await req.json()) as { url?: unknown };
-
-    if (typeof url !== 'string' || !url.includes('studydrive.net')) {
-      return NextResponse.json({ error: 'Valid StudyDrive URL is required.' }, { status: 400 });
-    }
-
-    const email = process.env.STUDYDRIVE_EMAIL;
-    const password = process.env.STUDYDRIVE_PASSWORD;
-
-    if (!email || !password) {
-      return NextResponse.json(
-        { error: 'Server configuration error: Missing StudyDrive credentials.' },
-        { status: 500 }
-      );
-    }
-
     if (isLocal) {
       // Fallback to local full puppeteer installation (requires `puppeteer` package)
       const localPuppeteer = await import('puppeteer');
@@ -178,27 +200,54 @@ export async function POST(req: Request) {
     await browser.close();
     browser = undefined;
 
-    // Extract original filename if possible from the URL, or default it
-    const match = url.match(/doc\/([^/]+)/);
-    const filename = match?.[1] ? `${match[1]}.pdf` : "StudyDrive-Document.pdf";
+    await pipePdfBody(pdfResponse.body, controller);
+    controller.close();
+  } catch (error: unknown) {
+    console.error("Error generating PDF:", error);
+    controller.error(error);
+  } finally {
+    await browser?.close().catch(() => undefined);
+  }
+}
 
-    // 3. Return the PDF
-    return new NextResponse(pdfResponse.body, {
+export async function POST(req: Request) {
+  try {
+    const { url } = (await req.json()) as { url?: unknown };
+
+    if (typeof url !== 'string' || !url.includes('studydrive.net')) {
+      return NextResponse.json({ error: 'Valid StudyDrive URL is required.' }, { status: 400 });
+    }
+
+    const email = process.env.STUDYDRIVE_EMAIL;
+    const password = process.env.STUDYDRIVE_PASSWORD;
+
+    if (!email || !password) {
+      return NextResponse.json(
+        { error: 'Server configuration error: Missing StudyDrive credentials.' },
+        { status: 500 },
+      );
+    }
+
+    const match = url.match(/doc\/([^/]+)/);
+    const filename = match?.[1] ? `${match[1]}.pdf` : 'StudyDrive-Document.pdf';
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Flush valid PDF bytes immediately so Netlify does not terminate a
+        // cold Chromium start as an inactive upstream connection.
+        controller.enqueue(PDF_PREFIX);
+        void streamDocument(url, email, password, controller);
+      },
+    });
+
+    return new NextResponse(stream, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${filename}"`,
-      }
+      },
     });
-
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to download document.';
-    console.error("Error generating PDF:", error);
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    );
-  } finally {
-    await browser?.close().catch(() => undefined);
+    const message = error instanceof Error ? error.message : 'Invalid request.';
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }

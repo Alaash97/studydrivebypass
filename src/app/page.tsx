@@ -44,6 +44,9 @@ export default function Home() {
       }
 
       const blob = await res.blob();
+      if (blob.size < 100) {
+        throw new Error('The download stream ended before the PDF was ready. Check the server function logs.');
+      }
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadUrl;
