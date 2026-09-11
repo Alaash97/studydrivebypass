@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import puppeteer, { type Browser, type HTTPRequest } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import { loginToStudyDrive, STUDYDRIVE_NETWORK_ARGS } from '@/lib/studydrive-login';
+import {
+  loginToStudyDriveViaHttp,
+  STUDYDRIVE_NETWORK_ARGS,
+  STUDYDRIVE_USER_AGENT,
+} from '@/lib/studydrive-login';
 
 type PreviewRequest = {
   url: string;
@@ -89,10 +93,7 @@ async function streamDocument(
     }
 
     const page = await browser.newPage();
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
-    );
+    await page.setUserAgent(STUDYDRIVE_USER_AGENT);
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
     // 1. Initial login (Optional optimization: Could save/reuse cookies if we wanted to be faster, 
@@ -101,12 +102,10 @@ async function streamDocument(
     const startTime = Date.now();
     const logStep = (msg: string) => console.log(`[${Date.now() - startTime}ms] ${msg}`);
 
-    logStep("Navigating to login page...");
-
     try {
-      logStep("Waiting for and submitting the login form...");
-      await loginToStudyDrive(page, email, password);
-      logStep("Logged in successfully.");
+      logStep("Creating authenticated StudyDrive session...");
+      await loginToStudyDriveViaHttp(page, email, password);
+      logStep("Authenticated session ready.");
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown timeout';
       console.error("Failed to find login fields or login timed out.", error);

@@ -1,6 +1,9 @@
 import type { Page } from 'puppeteer-core';
 
 export const STUDYDRIVE_LOGIN_URL = 'https://www.studydrive.net/en/login';
+export const STUDYDRIVE_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
 
 // Some serverless egress/CDN combinations reset StudyDrive's HTTP/2 stream.
 // Chromium then displays chrome-error://chromewebdata before the DOM exists.
@@ -30,6 +33,74 @@ export function isLoginUrl(url: string): boolean {
   } catch {
     return true;
   }
+}
+
+function getSetCookieHeaders(headers: Headers): string[] {
+  const cookieHeaders = headers as Headers & { getSetCookie?: () => string[] };
+  return cookieHeaders.getSetCookie?.() ?? (headers.get('set-cookie') ? [headers.get('set-cookie')!] : []);
+}
+
+export function mergeSetCookies(cookieJar: Map<string, string>, headers: Headers): void {
+  for (const setCookie of getSetCookieHeaders(headers)) {
+    const pair = setCookie.split(';', 1)[0];
+    const separator = pair.indexOf('=');
+    if (separator <= 0) continue;
+    cookieJar.set(pair.slice(0, separator), pair.slice(separator + 1));
+  }
+}
+
+export async function loginToStudyDriveViaHttp(
+  page: Page,
+  email: string,
+  password: string,
+): Promise<void> {
+  const cookieJar = new Map<string, string>();
+  const initialResponse = await fetch(STUDYDRIVE_LOGIN_URL, {
+    headers: {
+      accept: 'text/html,application/xhtml+xml',
+      'user-agent': STUDYDRIVE_USER_AGENT,
+    },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!initialResponse.ok) {
+    throw new Error(`StudyDrive login bootstrap returned HTTP ${initialResponse.status}.`);
+  }
+  mergeSetCookies(cookieJar, initialResponse.headers);
+  await initialResponse.body?.cancel();
+
+  const loginResponse = await fetch('https://www.studydrive.net/login', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/plain, */*',
+      'content-type': 'application/json',
+      cookie: Array.from(cookieJar, ([name, value]) => `${name}=${value}`).join('; '),
+      origin: 'https://www.studydrive.net',
+      referer: STUDYDRIVE_LOGIN_URL,
+      'user-agent': STUDYDRIVE_USER_AGENT,
+      'x-requested-with': 'XMLHttpRequest',
+    },
+    body: JSON.stringify({ email, password, remember: true }),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  mergeSetCookies(cookieJar, loginResponse.headers);
+  const result = await loginResponse.json().catch(() => null) as { success?: boolean } | null;
+  if (!loginResponse.ok || !result?.success) {
+    throw new Error(`StudyDrive login request returned HTTP ${loginResponse.status}.`);
+  }
+
+  await page.setCookie(
+    ...Array.from(cookieJar, ([name, value]) => ({
+      name,
+      value,
+      domain: '.studydrive.net',
+      path: '/',
+      secure: true,
+    })),
+  );
 }
 
 async function getPageSummary(page: Page): Promise<string> {
