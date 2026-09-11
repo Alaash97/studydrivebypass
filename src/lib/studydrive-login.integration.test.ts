@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import puppeteer, { type Browser } from 'puppeteer';
-import { loginToStudyDrive } from './studydrive-login';
+import { loginToStudyDrive, STUDYDRIVE_NETWORK_ARGS } from './studydrive-login';
 
 const runLiveTest = process.env.RUN_STUDYDRIVE_INTEGRATION === '1';
 
@@ -21,7 +21,7 @@ describe.skipIf(!runLiveTest)('StudyDrive login integration', () => {
 
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', ...STUDYDRIVE_NETWORK_ARGS],
     });
     const page = await browser.newPage();
 

@@ -2,6 +2,10 @@ import type { Page } from 'puppeteer-core';
 
 export const STUDYDRIVE_LOGIN_URL = 'https://www.studydrive.net/en/login';
 
+// Some serverless egress/CDN combinations reset StudyDrive's HTTP/2 stream.
+// Chromium then displays chrome-error://chromewebdata before the DOM exists.
+export const STUDYDRIVE_NETWORK_ARGS = ['--disable-http2', '--disable-quic'] as const;
+
 export const LOGIN_SELECTORS = {
   email: [
     'input[autocomplete="username"]',
@@ -53,9 +57,6 @@ async function openLoginForm(page: Page): Promise<void> {
       return;
     } catch (error) {
       lastError = error;
-      if (attempt === 1) {
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: LOGIN_TIMEOUT_MS }).catch(() => undefined);
-      }
     }
   }
 

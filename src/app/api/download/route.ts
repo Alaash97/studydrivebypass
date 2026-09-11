@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import puppeteer, { type Browser, type HTTPResponse } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
-import { loginToStudyDrive } from '@/lib/studydrive-login';
+import { loginToStudyDrive, STUDYDRIVE_NETWORK_ARGS } from '@/lib/studydrive-login';
 
 // Determine if we are running in an AWS/Netlify/Vercel serverless environment
 const isLocal = !process.env.NETLIFY && !process.env.VERCEL && !process.env.AWS_REGION;
@@ -34,7 +34,7 @@ export async function POST(req: Request) {
       const localPuppeteer = await import('puppeteer');
       browser = await localPuppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', ...STUDYDRIVE_NETWORK_ARGS]
       });
     } else {
       // Serverless Chromium setup
@@ -43,7 +43,12 @@ export async function POST(req: Request) {
         : 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar';
 
       browser = await puppeteer.launch({
-        args: [...chromium.args, '--hide-scrollbars', '--disable-web-security'],
+        args: [
+          ...chromium.args,
+          '--hide-scrollbars',
+          '--disable-web-security',
+          ...STUDYDRIVE_NETWORK_ARGS,
+        ],
         executablePath: await chromium.executablePath(packUrl),
         headless: true,
         acceptInsecureCerts: true,
